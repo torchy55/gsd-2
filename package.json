@@ -1,0 +1,41 @@
+{
+  "name": "gsd-pi",
+  "version": "0.1.0",
+  "description": "GSD — Get Stuff Done coding agent",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "bin": {
+    "gsd": "dist/loader.js"
+  },
+  "files": [
+    "dist",
+    "pkg",
+    "src/resources",
+    "scripts/postinstall.js",
+    "package.json",
+    "README.md"
+  ],
+  "piConfig": {
+    "name": "gsd",
+    "configDir": ".gsd"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "scripts": {
+    "build": "tsc && npm run copy-themes",
+    "copy-themes": "node -e \"const{mkdirSync,cpSync}=require('fs');const{resolve}=require('path');const src=resolve(__dirname,'node_modules/@mariozechner/pi-coding-agent/dist/modes/interactive/theme');mkdirSync('pkg/dist/modes/interactive/theme',{recursive:true});cpSync(src,'pkg/dist/modes/interactive/theme',{recursive:true})\"",
+    "test": "node --import ./src/resources/extensions/gsd/tests/resolve-ts.mjs --experimental-strip-types --test 'src/resources/extensions/gsd/tests/*.test.ts' 'src/resources/extensions/gsd/tests/*.test.mjs' 'src/tests/*.test.ts'",
+    "dev": "tsc --watch",
+    "postinstall": "node scripts/postinstall.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.57.1",
+    "playwright": "^1.58.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0"
+  }
+}
