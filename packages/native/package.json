@@ -22,6 +22,10 @@
     "./clipboard": {
       "types": "./src/clipboard/index.ts",
       "import": "./src/clipboard/index.ts"
+    },
+    "./ast": {
+      "types": "./src/ast/index.ts",
+      "import": "./src/ast/index.ts"
     }
   },
   "files": [

@@ -8,5 +8,6 @@
 
 #![allow(clippy::needless_pass_by_value)]
 
+mod ast;
 mod clipboard;
 mod grep;
