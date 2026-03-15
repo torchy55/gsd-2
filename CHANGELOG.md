@@ -6,6 +6,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.14.4] - 2026-03-15
+
+### Fixed
+- **Session cwd update** — `newSession()` now updates the LLM's perceived working directory to reflect `process.chdir()` into auto-worktrees. Previously the system prompt was frozen at the original project root, causing the LLM to `cd` back and write files to the wrong location. This was the root cause of complete-slice and plan-slice loops in worktree-based projects.
+
 ## [2.14.3] - 2026-03-15
 
 ### Fixed
@@ -653,7 +658,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - License updated to MIT
 
-[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.14.3...HEAD
+[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.14.4...HEAD
+[2.14.4]: https://github.com/gsd-build/gsd-2/compare/v2.14.3...v2.14.4
 [2.14.3]: https://github.com/gsd-build/gsd-2/compare/v2.14.2...v2.14.3
 [2.14.2]: https://github.com/gsd-build/gsd-2/compare/v2.14.1...v2.14.2
 [2.14.1]: https://github.com/gsd-build/gsd-2/compare/v2.14.0...v2.14.1
