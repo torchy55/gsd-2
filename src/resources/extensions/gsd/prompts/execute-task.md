@@ -2,7 +2,13 @@ You are executing GSD auto-mode.
 
 ## UNIT: Execute Task {{taskId}} ("{{taskTitle}}") — Slice {{sliceId}} ("{{sliceTitle}}"), Milestone {{milestoneId}}
 
-Start with the inlined context below. Treat the inlined task plan as the authoritative local execution contract for this unit. Use the referenced source artifacts to verify details, resolve ambiguity, and run the required checks — do not waste time reconstructing context that is already provided here.
+## Working Directory
+
+Your working directory is `{{workingDirectory}}`. All file reads, writes, and shell commands MUST operate relative to this directory. Do NOT `cd` to any other directory.
+
+A researcher explored the codebase and a planner decomposed the work — you are the executor. The task plan below is your authoritative contract. It contains the specific files, steps, and verification you need. Don't re-research or re-plan — build what the plan says, verify it works, and document what happened.
+
+{{overridesSection}}
 
 {{resumeSection}}
 
@@ -48,13 +54,14 @@ Then:
     - Don't fix symptoms. Understand *why* something fails before changing code. A test that passes after a change you don't understand is luck, not a fix.
 11. **Blocker discovery:** If execution reveals that the remaining slice plan is fundamentally invalid — not just a bug or minor deviation, but a plan-invalidating finding like a wrong API, missing capability, or architectural mismatch — set `blocker_discovered: true` in the task summary frontmatter and describe the blocker clearly in the summary narrative. Do NOT set `blocker_discovered: true` for ordinary debugging, minor deviations, or issues that can be fixed within the current task or the remaining plan. This flag triggers an automatic replan of the slice.
 12. If you made an architectural, pattern, library, or observability decision during this task that downstream work should know about, append it to `.gsd/DECISIONS.md` (use the **Decisions** output template from the inlined templates below if the file doesn't exist yet). Not every task produces decisions — only append when a meaningful choice was made.
-13. Use the **Task Summary** output template from the inlined templates below
-14. Write `{{taskSummaryPath}}`
-15. Mark {{taskId}} done in `{{planPath}}` (change `[ ]` to `[x]`)
-16. Do not commit manually — the system auto-commits your changes after this unit completes.
-17. Update `.gsd/STATE.md`
+13. If you discover a non-obvious rule, recurring gotcha, or useful pattern during execution, append it to `.gsd/KNOWLEDGE.md`. Only add entries that would save future agents from repeating your investigation. Don't add obvious things.
+14. Use the **Task Summary** output template from the inlined templates below
+15. Write `{{taskSummaryPath}}`
+16. Mark {{taskId}} done in `{{planPath}}` (change `[ ]` to `[x]`)
+17. Do not commit manually — the system auto-commits your changes after this unit completes.
+18. Update `.gsd/STATE.md`
 
-You are on the slice branch. All work stays here.
+All work stays in your working directory: `{{workingDirectory}}`.
 
 **You MUST mark {{taskId}} as `[x]` in `{{planPath}}` AND write `{{taskSummaryPath}}` before finishing.**
 

@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { deriveState } from "./state.js";
 import { GSDDashboardOverlay } from "./dashboard-overlay.js";
 import { showQueue, showDiscuss } from "./guided-flow.js";
-import { startAuto, stopAuto, isAutoActive, isAutoPaused, isStepMode } from "./auto.js";
+import { startAuto, stopAuto, pauseAuto, isAutoActive, isAutoPaused, isStepMode, stopAutoRemote } from "./auto.js";
 import {
   getGlobalGSDPreferencesPath,
   getLegacyGlobalGSDPreferencesPath,
@@ -23,7 +23,7 @@ import {
   loadEffectiveGSDPreferences,
   resolveAllSkillReferences,
 } from "./preferences.js";
-import { loadFile, saveFile } from "./files.js";
+import { loadFile, saveFile, appendOverride, appendKnowledge } from "./files.js";
 import {
   formatDoctorIssuesForPrompt,
   formatDoctorReport,
@@ -32,8 +32,12 @@ import {
   filterDoctorIssues,
 } from "./doctor.js";
 import { loadPrompt } from "./prompt-loader.js";
-import { handleMigrate } from "./migrate/command.js";
+
 import { handleRemote } from "../remote-questions/remote-command.js";
+import { handleHistory } from "./history.js";
+import { handleUndo } from "./undo.js";
+import { handleExport } from "./export.js";
+import { nativeBranchList, nativeDetectMainBranch, nativeBranchListMerged, nativeBranchDelete, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
 
 function dispatchDoctorHeal(pi: ExtensionAPI, scope: string | undefined, reportText: string, structuredIssues: string): void {
   const workflowPath = process.env.GSD_WORKFLOW_PATH ?? join(process.env.HOME ?? "~", ".pi", "GSD-WORKFLOW.md");
@@ -55,10 +59,13 @@ function dispatchDoctorHeal(pi: ExtensionAPI, scope: string | undefined, reportT
 
 export function registerGSDCommand(pi: ExtensionAPI): void {
   pi.registerCommand("gsd", {
-    description: "GSD — Get Shit Done: /gsd next|auto|stop|status|queue|prefs|config|hooks|doctor|migrate|remote",
-
+    description: "GSD — Get Shit Done: /gsd next|auto|stop|pause|status|queue|history|undo|skip|export|cleanup|prefs|config|hooks|doctor|migrate|remote|steer|knowledge",
     getArgumentCompletions: (prefix: string) => {
-      const subcommands = ["next", "auto", "stop", "status", "queue", "discuss", "prefs", "config", "hooks", "doctor", "migrate", "remote"];
+      const subcommands = [
+        "next", "auto", "stop", "pause", "status", "queue", "discuss",
+        "history", "undo", "skip", "export", "cleanup", "prefs",
+        "config", "hooks", "doctor", "migrate", "remote", "steer", "knowledge",
+      ];
       const parts = prefix.trim().split(/\s+/);
 
       if (parts.length <= 1) {
@@ -86,6 +93,45 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
         return ["slack", "discord", "status", "disconnect"]
           .filter((cmd) => cmd.startsWith(subPrefix))
           .map((cmd) => ({ value: `remote ${cmd}`, label: cmd }));
+      }
+
+      if (parts[0] === "next" && parts.length <= 2) {
+        const flagPrefix = parts[1] ?? "";
+        return ["--verbose", "--dry-run"]
+          .filter((f) => f.startsWith(flagPrefix))
+          .map((f) => ({ value: `next ${f}`, label: f }));
+      }
+
+      if (parts[0] === "history" && parts.length <= 2) {
+        const flagPrefix = parts[1] ?? "";
+        return ["--cost", "--phase", "--model", "10", "20", "50"]
+          .filter((f) => f.startsWith(flagPrefix))
+          .map((f) => ({ value: `history ${f}`, label: f }));
+      }
+
+      if (parts[0] === "undo" && parts.length <= 2) {
+        return [{ value: "undo --force", label: "--force" }];
+      }
+
+      if (parts[0] === "export" && parts.length <= 2) {
+        const flagPrefix = parts[1] ?? "";
+        return ["--json", "--markdown"]
+          .filter((f) => f.startsWith(flagPrefix))
+          .map((f) => ({ value: `export ${f}`, label: f }));
+      }
+
+      if (parts[0] === "cleanup" && parts.length <= 2) {
+        const subPrefix = parts[1] ?? "";
+        return ["branches", "snapshots"]
+          .filter((cmd) => cmd.startsWith(subPrefix))
+          .map((cmd) => ({ value: `cleanup ${cmd}`, label: cmd }));
+      }
+
+      if (parts[0] === "knowledge" && parts.length <= 2) {
+        const subPrefix = parts[1] ?? "";
+        return ["rule", "pattern", "lesson"]
+          .filter((cmd) => cmd.startsWith(subPrefix))
+          .map((cmd) => ({ value: `knowledge ${cmd}`, label: cmd }));
       }
 
       if (parts[0] === "doctor") {
@@ -123,6 +169,10 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
       }
 
       if (trimmed === "next" || trimmed.startsWith("next ")) {
+        if (trimmed.includes("--dry-run")) {
+          await handleDryRun(ctx, process.cwd());
+          return;
+        }
         const verboseMode = trimmed.includes("--verbose");
         const debugMode = trimmed.includes("--debug");
         if (debugMode) enableDebug(process.cwd());
@@ -140,10 +190,61 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
 
       if (trimmed === "stop") {
         if (!isAutoActive() && !isAutoPaused()) {
-          ctx.ui.notify("Auto-mode is not running.", "info");
+          // Not running in this process — check for a remote auto-mode session
+          const result = stopAutoRemote(process.cwd());
+          if (result.found) {
+            ctx.ui.notify(`Sent stop signal to auto-mode session (PID ${result.pid}). It will shut down gracefully.`, "info");
+          } else if (result.error) {
+            ctx.ui.notify(`Failed to stop remote auto-mode: ${result.error}`, "error");
+          } else {
+            ctx.ui.notify("Auto-mode is not running.", "info");
+          }
           return;
         }
         await stopAuto(ctx, pi);
+        return;
+      }
+
+      if (trimmed === "pause") {
+        if (!isAutoActive()) {
+          if (isAutoPaused()) {
+            ctx.ui.notify("Auto-mode is already paused. /gsd auto to resume.", "info");
+          } else {
+            ctx.ui.notify("Auto-mode is not running.", "info");
+          }
+          return;
+        }
+        await pauseAuto(ctx, pi);
+        return;
+      }
+
+      if (trimmed === "history" || trimmed.startsWith("history ")) {
+        await handleHistory(trimmed.replace(/^history\s*/, "").trim(), ctx, process.cwd());
+        return;
+      }
+
+      if (trimmed === "undo" || trimmed.startsWith("undo ")) {
+        await handleUndo(trimmed.replace(/^undo\s*/, "").trim(), ctx, pi, process.cwd());
+        return;
+      }
+
+      if (trimmed.startsWith("skip ")) {
+        await handleSkip(trimmed.replace(/^skip\s*/, "").trim(), ctx, process.cwd());
+        return;
+      }
+
+      if (trimmed === "export" || trimmed.startsWith("export ")) {
+        await handleExport(trimmed.replace(/^export\s*/, "").trim(), ctx, process.cwd());
+        return;
+      }
+
+      if (trimmed === "cleanup branches") {
+        await handleCleanupBranches(ctx, process.cwd());
+        return;
+      }
+
+      if (trimmed === "cleanup snapshots") {
+        await handleCleanupSnapshots(ctx, process.cwd());
         return;
       }
 
@@ -168,7 +269,26 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
         return;
       }
 
+      if (trimmed.startsWith("steer ")) {
+        await handleSteer(trimmed.replace(/^steer\s+/, "").trim(), ctx, pi);
+        return;
+      }
+      if (trimmed === "steer") {
+        ctx.ui.notify("Usage: /gsd steer <description of change>. Example: /gsd steer Use Postgres instead of SQLite", "warning");
+        return;
+      }
+
+      if (trimmed.startsWith("knowledge ")) {
+        await handleKnowledge(trimmed.replace(/^knowledge\s+/, "").trim(), ctx);
+        return;
+      }
+      if (trimmed === "knowledge") {
+        ctx.ui.notify("Usage: /gsd knowledge <rule|pattern|lesson> <description>. Example: /gsd knowledge rule Use real DB for integration tests", "warning");
+        return;
+      }
+
       if (trimmed === "migrate" || trimmed.startsWith("migrate ")) {
+        const { handleMigrate } = await import("./migrate/command.js");
         await handleMigrate(trimmed.replace(/^migrate\s*/, "").trim(), ctx, pi);
         return;
       }
@@ -185,7 +305,7 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
       }
 
       ctx.ui.notify(
-        `Unknown: /gsd ${trimmed}. Use /gsd, /gsd next, /gsd auto, /gsd stop, /gsd status, /gsd queue, /gsd discuss, /gsd prefs, /gsd config, /gsd hooks, /gsd doctor [audit|fix|heal] [M###/S##], /gsd migrate <path>, or /gsd remote [slack|discord|status|disconnect].`,
+        `Unknown: /gsd ${trimmed}. Use /gsd next|auto|stop|pause|status|queue|discuss|history|undo|skip <unit>|export|cleanup|prefs|config|hooks|doctor|migrate|remote|steer <change>|knowledge <type> <entry>.`,
         "warning",
       );
     },
@@ -336,7 +456,7 @@ async function handlePrefsWizard(
       const title = `Model for ${phase} phase${current ? ` (current: ${current})` : ""}:`;
       const choice = await ctx.ui.select(title, modelOptions);
 
-      if (choice && choice !== "(keep current)") {
+      if (choice && typeof choice === "string" && choice !== "(keep current)") {
         if (choice === "(clear)") {
           delete models[phase];
         } else {
@@ -396,8 +516,10 @@ async function handlePrefsWizard(
     prefs.auto_supervisor = autoSup;
   }
 
-  // ─── Git main branch ────────────────────────────────────────────────────
+  // ─── Git settings ───────────────────────────────────────────────────────
   const git: Record<string, unknown> = (prefs.git as Record<string, unknown>) ?? {};
+
+  // main_branch
   const currentBranch = git.main_branch ? String(git.main_branch) : "";
   const branchInput = await ctx.ui.input(
     `Git main branch${currentBranch ? ` (current: ${currentBranch})` : ""}:`,
@@ -411,6 +533,100 @@ async function handlePrefsWizard(
       delete git.main_branch;
     }
   }
+
+  // Boolean git toggles
+  const gitBooleanFields = [
+    { key: "auto_push", label: "Auto-push commits after committing", defaultVal: false },
+    { key: "push_branches", label: "Push milestone branches to remote", defaultVal: false },
+    { key: "snapshots", label: "Create WIP snapshot commits during long tasks", defaultVal: false },
+  ] as const;
+
+  for (const field of gitBooleanFields) {
+    const current = git[field.key];
+    const currentStr = current !== undefined ? String(current) : "";
+    const choice = await ctx.ui.select(
+      `${field.label}${currentStr ? ` (current: ${currentStr})` : ` (default: ${field.defaultVal})`}:`,
+      ["true", "false", "(keep current)"],
+    );
+    if (choice && choice !== "(keep current)") {
+      git[field.key] = choice === "true";
+    }
+  }
+
+  // remote
+  const currentRemote = git.remote ? String(git.remote) : "";
+  const remoteInput = await ctx.ui.input(
+    `Git remote name${currentRemote ? ` (current: ${currentRemote})` : " (default: origin)"}:`,
+    currentRemote || "origin",
+  );
+  if (remoteInput !== null && remoteInput !== undefined) {
+    const val = remoteInput.trim();
+    if (val && val !== "origin") {
+      git.remote = val;
+    } else if (!val && currentRemote) {
+      delete git.remote;
+    }
+  }
+
+  // pre_merge_check
+  const currentPreMerge = git.pre_merge_check !== undefined ? String(git.pre_merge_check) : "";
+  const preMergeChoice = await ctx.ui.select(
+    `Pre-merge check${currentPreMerge ? ` (current: ${currentPreMerge})` : " (default: false)"}:`,
+    ["true", "false", "auto", "(keep current)"],
+  );
+  if (preMergeChoice && preMergeChoice !== "(keep current)") {
+    if (preMergeChoice === "auto") {
+      git.pre_merge_check = "auto";
+    } else {
+      git.pre_merge_check = preMergeChoice === "true";
+    }
+  }
+
+  // commit_type
+  const currentCommitType = git.commit_type ? String(git.commit_type) : "";
+  const commitTypes = ["feat", "fix", "refactor", "docs", "test", "chore", "perf", "ci", "build", "style", "(inferred — default)", "(keep current)"];
+  const commitChoice = await ctx.ui.select(
+    `Default commit type${currentCommitType ? ` (current: ${currentCommitType})` : ""}:`,
+    commitTypes,
+  );
+  if (commitChoice && typeof commitChoice === "string" && commitChoice !== "(keep current)") {
+    if ((commitChoice as string).startsWith("(inferred")) {
+      delete git.commit_type;
+    } else {
+      git.commit_type = commitChoice;
+    }
+  }
+
+  // merge_strategy
+  const currentMerge = git.merge_strategy ? String(git.merge_strategy) : "";
+  const mergeChoice = await ctx.ui.select(
+    `Merge strategy${currentMerge ? ` (current: ${currentMerge})` : ""}:`,
+    ["squash", "merge", "(keep current)"],
+  );
+  if (mergeChoice && mergeChoice !== "(keep current)") {
+    git.merge_strategy = mergeChoice;
+  }
+
+  // isolation
+  const currentIsolation = git.isolation ? String(git.isolation) : "";
+  const isolationChoice = await ctx.ui.select(
+    `Git isolation strategy${currentIsolation ? ` (current: ${currentIsolation})` : " (default: worktree)"}:`,
+    ["worktree", "branch", "(keep current)"],
+  );
+  if (isolationChoice && isolationChoice !== "(keep current)") {
+    git.isolation = isolationChoice;
+  }
+
+  // ─── Git commit_docs ────────────────────────────────────────────────────
+  const currentCommitDocs = git.commit_docs;
+  const commitDocsChoice = await ctx.ui.select(
+    `Track .gsd/ planning docs in git${currentCommitDocs !== undefined ? ` (current: ${currentCommitDocs})` : ""}:`,
+    ["true", "false", "(keep current)"],
+  );
+  if (commitDocsChoice && commitDocsChoice !== "(keep current)") {
+    git.commit_docs = commitDocsChoice === "true";
+  }
+
   if (Object.keys(git).length > 0) {
     prefs.git = git;
   }
@@ -433,6 +649,89 @@ async function handlePrefsWizard(
   );
   if (uniqueChoice && uniqueChoice !== "(keep current)") {
     prefs.unique_milestone_ids = uniqueChoice === "true";
+  }
+
+  // ─── Budget & cost control ────────────────────────────────────────────
+  const currentCeiling = prefs.budget_ceiling;
+  const ceilingStr = currentCeiling !== undefined ? String(currentCeiling) : "";
+  const ceilingInput = await ctx.ui.input(
+    `Budget ceiling (USD)${ceilingStr ? ` (current: $${ceilingStr})` : " (default: no limit)"}:`,
+    ceilingStr || "",
+  );
+  if (ceilingInput !== null && ceilingInput !== undefined) {
+    const val = ceilingInput.trim().replace(/^\$/, "");
+    if (val && !isNaN(Number(val)) && isFinite(Number(val))) {
+      prefs.budget_ceiling = Number(val);
+    } else if (val && (isNaN(Number(val)) || !isFinite(Number(val)))) {
+      ctx.ui.notify(`Invalid budget ceiling "${val}" — must be a number. Keeping previous value.`, "warning");
+    } else if (!val && ceilingStr) {
+      delete prefs.budget_ceiling;
+    }
+  }
+
+  const currentEnforcement = (prefs.budget_enforcement as string) ?? "";
+  const enforcementChoice = await ctx.ui.select(
+    `Budget enforcement${currentEnforcement ? ` (current: ${currentEnforcement})` : " (default: pause)"}:`,
+    ["warn", "pause", "halt", "(keep current)"],
+  );
+  if (enforcementChoice && enforcementChoice !== "(keep current)") {
+    prefs.budget_enforcement = enforcementChoice;
+  }
+
+  const currentContextPause = prefs.context_pause_threshold;
+  const contextPauseStr = currentContextPause !== undefined ? String(currentContextPause) : "";
+  const contextPauseInput = await ctx.ui.input(
+    `Context pause threshold (0-100%, 0=disabled)${contextPauseStr ? ` (current: ${contextPauseStr}%)` : " (default: 0)"}:`,
+    contextPauseStr || "0",
+  );
+  if (contextPauseInput !== null && contextPauseInput !== undefined) {
+    const val = contextPauseInput.trim().replace(/%$/, "");
+    if (val && !isNaN(Number(val)) && Number(val) >= 0 && Number(val) <= 100) {
+      const num = Number(val);
+      if (num === 0) {
+        delete prefs.context_pause_threshold;
+      } else {
+        prefs.context_pause_threshold = num;
+      }
+    } else if (val && (isNaN(Number(val)) || Number(val) < 0 || Number(val) > 100)) {
+      ctx.ui.notify(`Invalid context pause threshold "${val}" — must be 0-100. Keeping previous value.`, "warning");
+    }
+  }
+
+  // ─── Notifications ────────────────────────────────────────────────────
+  const notif: Record<string, boolean> = (prefs.notifications as Record<string, boolean>) ?? {};
+  const notifFields = [
+    { key: "enabled", label: "Notifications enabled (master toggle)", defaultVal: true },
+    { key: "on_complete", label: "Notify on unit completion", defaultVal: true },
+    { key: "on_error", label: "Notify on errors", defaultVal: true },
+    { key: "on_budget", label: "Notify on budget thresholds", defaultVal: true },
+    { key: "on_milestone", label: "Notify on milestone completion", defaultVal: true },
+    { key: "on_attention", label: "Notify when manual attention needed", defaultVal: true },
+  ] as const;
+
+  for (const field of notifFields) {
+    const current = notif[field.key];
+    const currentStr = current !== undefined ? String(current) : "";
+    const choice = await ctx.ui.select(
+      `${field.label}${currentStr ? ` (current: ${currentStr})` : ` (default: ${field.defaultVal})`}:`,
+      ["true", "false", "(keep current)"],
+    );
+    if (choice && choice !== "(keep current)") {
+      notif[field.key] = choice === "true";
+    }
+  }
+  if (Object.keys(notif).length > 0) {
+    prefs.notifications = notif;
+  }
+
+  // ─── UAT dispatch ─────────────────────────────────────────────────────
+  const currentUat = prefs.uat_dispatch;
+  const uatChoice = await ctx.ui.select(
+    `UAT dispatch mode${currentUat !== undefined ? ` (current: ${currentUat})` : " (default: false)"}:`,
+    ["true", "false", "(keep current)"],
+  );
+  if (uatChoice && uatChoice !== "(keep current)") {
+    prefs.uat_dispatch = uatChoice === "true";
   }
 
   // ─── Serialize to frontmatter ───────────────────────────────────────────
@@ -525,7 +824,10 @@ function serializePreferencesToFrontmatter(prefs: Record<string, unknown>): stri
   const orderedKeys = [
     "version", "always_use_skills", "prefer_skills", "avoid_skills",
     "skill_rules", "custom_instructions", "models", "skill_discovery",
-    "auto_supervisor", "uat_dispatch", "unique_milestone_ids", "budget_ceiling", "remote_questions", "git",
+    "auto_supervisor", "uat_dispatch", "unique_milestone_ids",
+    "budget_ceiling", "budget_enforcement", "context_pause_threshold",
+    "notifications", "remote_questions", "git",
+    "post_unit_hooks", "pre_dispatch_hooks",
   ];
 
   const seen = new Set<string>();
@@ -547,7 +849,12 @@ function serializePreferencesToFrontmatter(prefs: Record<string, unknown>): stri
 
 // ─── Tool Config Wizard ───────────────────────────────────────────────────────
 
-const TOOL_KEYS = [
+/**
+ * Tool API key configurations.
+ * This is the source of truth for tool credentials - used by both the config wizard
+ * and session startup to load keys from auth.json into environment variables.
+ */
+export const TOOL_KEYS = [
   { id: "tavily",   env: "TAVILY_API_KEY",   label: "Tavily Search",     hint: "tavily.com/app/api-keys" },
   { id: "brave",    env: "BRAVE_API_KEY",     label: "Brave Search",      hint: "brave.com/search/api" },
   { id: "context7", env: "CONTEXT7_API_KEY",  label: "Context7 Docs",     hint: "context7.com/dashboard" },
@@ -555,7 +862,28 @@ const TOOL_KEYS = [
   { id: "groq",     env: "GROQ_API_KEY",      label: "Groq Voice",        hint: "console.groq.com" },
 ] as const;
 
-function getConfigAuthStorage(): InstanceType<typeof AuthStorage> {
+/**
+ * Load tool API keys from auth.json into environment variables.
+ * Called at session startup to ensure tools have access to their credentials.
+ */
+export function loadToolApiKeys(): void {
+  try {
+    const authPath = join(process.env.HOME ?? "", ".gsd", "agent", "auth.json");
+    if (!existsSync(authPath)) return;
+
+    const auth = AuthStorage.create(authPath);
+    for (const tool of TOOL_KEYS) {
+      const cred = auth.get(tool.id);
+      if (cred && cred.type === "api_key" && cred.key && !process.env[tool.env]) {
+        process.env[tool.env] = cred.key;
+      }
+    }
+  } catch {
+    // Failed to load tool keys — ignore, they can still be set via env vars
+  }
+}
+
+function getConfigAuthStorage(): AuthStorage {
   const authPath = join(process.env.HOME ?? "", ".gsd", "agent", "auth.json");
   mkdirSync(dirname(authPath), { recursive: true });
   return AuthStorage.create(authPath);
@@ -582,7 +910,7 @@ async function handleConfig(ctx: ExtensionCommandContext): Promise<void> {
   let changed = false;
   while (true) {
     const choice = await ctx.ui.select("Configure which tool? Press Escape when done.", options);
-    if (!choice || choice === "(done)") break;
+    if (!choice || typeof choice !== "string" || choice === "(done)") break;
 
     const toolIdx = TOOL_KEYS.findIndex(t => choice.startsWith(t.label));
     if (toolIdx === -1) break;
@@ -630,4 +958,281 @@ async function ensurePreferencesFile(
     ctx.ui.notify(`Using existing ${scope} GSD skill preferences at ${path}`, "info");
   }
 
+}
+
+// ─── Skip handler ─────────────────────────────────────────────────────────────
+
+async function handleSkip(unitArg: string, ctx: ExtensionCommandContext, basePath: string): Promise<void> {
+  if (!unitArg) {
+    ctx.ui.notify("Usage: /gsd skip <unit-id>  (e.g., /gsd skip execute-task/M001/S01/T03 or /gsd skip T03)", "info");
+    return;
+  }
+
+  const { existsSync: fileExists, writeFileSync: writeFile, mkdirSync: mkDir, readFileSync: readFile } = await import("node:fs");
+  const { join: pathJoin } = await import("node:path");
+
+  const completedKeysFile = pathJoin(basePath, ".gsd", "completed-units.json");
+  let keys: string[] = [];
+  try {
+    if (fileExists(completedKeysFile)) {
+      keys = JSON.parse(readFile(completedKeysFile, "utf-8"));
+    }
+  } catch { /* start fresh */ }
+
+  // Normalize: accept "execute-task/M001/S01/T03", "M001/S01/T03", or just "T03"
+  let skipKey = unitArg;
+
+  if (!skipKey.includes("execute-task") && !skipKey.includes("plan-") && !skipKey.includes("research-") && !skipKey.includes("complete-")) {
+    const state = await deriveState(basePath);
+    const mid = state.activeMilestone?.id;
+    const sid = state.activeSlice?.id;
+
+    if (unitArg.match(/^T\d+$/i) && mid && sid) {
+      skipKey = `execute-task/${mid}/${sid}/${unitArg.toUpperCase()}`;
+    } else if (unitArg.match(/^S\d+$/i) && mid) {
+      skipKey = `plan-slice/${mid}/${unitArg.toUpperCase()}`;
+    } else if (unitArg.includes("/")) {
+      skipKey = `execute-task/${unitArg}`;
+    }
+  }
+
+  if (keys.includes(skipKey)) {
+    ctx.ui.notify(`Already skipped: ${skipKey}`, "info");
+    return;
+  }
+
+  keys.push(skipKey);
+  mkDir(pathJoin(basePath, ".gsd"), { recursive: true });
+  writeFile(completedKeysFile, JSON.stringify(keys), "utf-8");
+
+  ctx.ui.notify(`Skipped: ${skipKey}. Will not be dispatched in auto-mode.`, "success");
+}
+
+// ─── Dry-run handler ──────────────────────────────────────────────────────────
+
+async function handleDryRun(ctx: ExtensionCommandContext, basePath: string): Promise<void> {
+  const state = await deriveState(basePath);
+
+  if (!state.activeMilestone) {
+    ctx.ui.notify("No active milestone — nothing to dispatch.", "info");
+    return;
+  }
+
+  const { getLedger, getProjectTotals, formatCost, formatTokenCount, loadLedgerFromDisk } = await import("./metrics.js");
+  const { loadEffectiveGSDPreferences: loadPrefs } = await import("./preferences.js");
+  const { formatDuration } = await import("./history.js");
+
+  const ledger = getLedger();
+  const units = ledger?.units ?? loadLedgerFromDisk(basePath)?.units ?? [];
+  const prefs = loadPrefs()?.preferences;
+
+  let nextType = "unknown";
+  let nextId = "unknown";
+
+  const mid = state.activeMilestone.id;
+  const midTitle = state.activeMilestone.title;
+
+  if (state.phase === "pre-planning") {
+    nextType = "research-milestone";
+    nextId = mid;
+  } else if (state.phase === "planning" && state.activeSlice) {
+    nextType = "plan-slice";
+    nextId = `${mid}/${state.activeSlice.id}`;
+  } else if (state.phase === "executing" && state.activeTask && state.activeSlice) {
+    nextType = "execute-task";
+    nextId = `${mid}/${state.activeSlice.id}/${state.activeTask.id}`;
+  } else if (state.phase === "summarizing" && state.activeSlice) {
+    nextType = "complete-slice";
+    nextId = `${mid}/${state.activeSlice.id}`;
+  } else if (state.phase === "completing-milestone") {
+    nextType = "complete-milestone";
+    nextId = mid;
+  } else {
+    nextType = state.phase;
+    nextId = mid;
+  }
+
+  const sameTypeUnits = units.filter(u => u.type === nextType);
+  const avgCost = sameTypeUnits.length > 0
+    ? sameTypeUnits.reduce((s, u) => s + u.cost, 0) / sameTypeUnits.length
+    : null;
+  const avgDuration = sameTypeUnits.length > 0
+    ? sameTypeUnits.reduce((s, u) => s + (u.finishedAt - u.startedAt), 0) / sameTypeUnits.length
+    : null;
+
+  const totals = units.length > 0 ? getProjectTotals(units) : null;
+  const budgetRemaining = prefs?.budget_ceiling && totals
+    ? prefs.budget_ceiling - totals.cost
+    : null;
+
+  const lines = [
+    `Dry-run preview:`,
+    ``,
+    `  Next unit:     ${nextType}`,
+    `  ID:            ${nextId}`,
+    `  Milestone:     ${mid}: ${midTitle}`,
+    `  Phase:         ${state.phase}`,
+    `  Est. cost:     ${avgCost !== null ? `${formatCost(avgCost)} (avg of ${sameTypeUnits.length} similar)` : "unknown (first of this type)"}`,
+    `  Est. duration: ${avgDuration !== null ? formatDuration(avgDuration) : "unknown"}`,
+    `  Spent so far:  ${totals ? formatCost(totals.cost) : "$0"}`,
+    `  Budget left:   ${budgetRemaining !== null ? formatCost(budgetRemaining) : "no ceiling set"}`,
+  ];
+
+  if (state.progress) {
+    const p = state.progress;
+    lines.push(`  Progress:      ${p.tasks?.done ?? 0}/${p.tasks?.total ?? "?"} tasks, ${p.slices?.done ?? 0}/${p.slices?.total ?? "?"} slices`);
+  }
+
+  ctx.ui.notify(lines.join("\n"), "info");
+}
+
+// ─── Branch cleanup handler ──────────────────────────────────────────────────
+
+async function handleCleanupBranches(ctx: ExtensionCommandContext, basePath: string): Promise<void> {
+  let branches: string[];
+  try {
+    branches = nativeBranchList(basePath, "gsd/*");
+  } catch {
+    ctx.ui.notify("No GSD branches found.", "info");
+    return;
+  }
+
+  if (branches.length === 0) {
+    ctx.ui.notify("No GSD branches to clean up.", "info");
+    return;
+  }
+
+  const mainBranch = nativeDetectMainBranch(basePath);
+
+  let merged: string[];
+  try {
+    merged = nativeBranchListMerged(basePath, mainBranch, "gsd/*");
+  } catch {
+    merged = [];
+  }
+
+  if (merged.length === 0) {
+    ctx.ui.notify(`${branches.length} GSD branches found, none are merged into ${mainBranch} yet.`, "info");
+    return;
+  }
+
+  let deleted = 0;
+  for (const branch of merged) {
+    try {
+      nativeBranchDelete(basePath, branch, false);
+      deleted++;
+    } catch { /* skip branches that can't be deleted */ }
+  }
+
+  ctx.ui.notify(`Cleaned up ${deleted} merged branches. ${branches.length - deleted} remain.`, "success");
+}
+
+// ─── Snapshot cleanup handler ─────────────────────────────────────────────────
+
+async function handleCleanupSnapshots(ctx: ExtensionCommandContext, basePath: string): Promise<void> {
+  let refs: string[];
+  try {
+    refs = nativeForEachRef(basePath, "refs/gsd/snapshots/");
+  } catch {
+    ctx.ui.notify("No snapshot refs found.", "info");
+    return;
+  }
+
+  if (refs.length === 0) {
+    ctx.ui.notify("No snapshot refs to clean up.", "info");
+    return;
+  }
+
+  const byLabel = new Map<string, string[]>();
+  for (const ref of refs) {
+    const parts = ref.split("/");
+    const label = parts.slice(0, -1).join("/");
+    if (!byLabel.has(label)) byLabel.set(label, []);
+    byLabel.get(label)!.push(ref);
+  }
+
+  let pruned = 0;
+  for (const [, labelRefs] of byLabel) {
+    const sorted = labelRefs.sort();
+    for (const old of sorted.slice(0, -5)) {
+      try {
+        nativeUpdateRef(basePath, old);
+        pruned++;
+      } catch { /* skip */ }
+    }
+  }
+
+  ctx.ui.notify(`Pruned ${pruned} old snapshot refs. ${refs.length - pruned} remain.`, "success");
+}
+
+async function handleKnowledge(args: string, ctx: ExtensionCommandContext): Promise<void> {
+  const parts = args.split(/\s+/);
+  const typeArg = parts[0]?.toLowerCase();
+
+  if (!typeArg || !["rule", "pattern", "lesson"].includes(typeArg)) {
+    ctx.ui.notify(
+      "Usage: /gsd knowledge <rule|pattern|lesson> <description>\nExample: /gsd knowledge rule Use real DB for integration tests",
+      "warning",
+    );
+    return;
+  }
+
+  const entryText = parts.slice(1).join(" ").trim();
+  if (!entryText) {
+    ctx.ui.notify(`Usage: /gsd knowledge ${typeArg} <description>`, "warning");
+    return;
+  }
+
+  const type = typeArg as "rule" | "pattern" | "lesson";
+  const basePath = process.cwd();
+  const state = await deriveState(basePath);
+  const scope = state.activeMilestone?.id
+    ? `${state.activeMilestone.id}${state.activeSlice ? `/${state.activeSlice.id}` : ""}`
+    : "global";
+
+  await appendKnowledge(basePath, type, entryText, scope);
+  ctx.ui.notify(`Added ${type} to KNOWLEDGE.md: "${entryText}"`, "success");
+}
+
+async function handleSteer(change: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+  const basePath = process.cwd();
+  const state = await deriveState(basePath);
+  const mid = state.activeMilestone?.id ?? "none";
+  const sid = state.activeSlice?.id ?? "none";
+  const tid = state.activeTask?.id ?? "none";
+  const appliedAt = `${mid}/${sid}/${tid}`;
+  await appendOverride(basePath, change, appliedAt);
+
+  if (isAutoActive()) {
+    pi.sendMessage({
+      customType: "gsd-hard-steer",
+      content: [
+        "HARD STEER — User override registered.",
+        "",
+        `**Override:** ${change}`,
+        "",
+        "This override has been saved to `.gsd/OVERRIDES.md` and will be injected into all future task prompts.",
+        "A document rewrite unit will run before the next task to propagate this change across all active plan documents.",
+        "",
+        "If you are mid-task, finish your current work respecting this override. The next dispatched unit will be a document rewrite.",
+      ].join("\n"),
+      display: false,
+    }, { triggerTurn: true });
+    ctx.ui.notify(`Override registered: "${change}". Will be applied before next task dispatch.`, "info");
+  } else {
+    pi.sendMessage({
+      customType: "gsd-hard-steer",
+      content: [
+        "HARD STEER — User override registered.",
+        "",
+        `**Override:** ${change}`,
+        "",
+        "This override has been saved to `.gsd/OVERRIDES.md`.",
+        "Before continuing, read `.gsd/OVERRIDES.md` and update the current plan documents to reflect this change.",
+        "Focus on: active slice plan, incomplete task plans, and DECISIONS.md.",
+      ].join("\n"),
+      display: false,
+    }, { triggerTurn: true });
+    ctx.ui.notify(`Override registered: "${change}". Update plan documents to reflect this change.`, "info");
+  }
 }

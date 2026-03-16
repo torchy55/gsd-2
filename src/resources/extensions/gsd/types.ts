@@ -234,6 +234,47 @@ export interface HookDispatchResult {
   unitId: string;
 }
 
+// ─── Budget & Notification Types ──────────────────────────────────────────
+
+export type BudgetEnforcementMode = 'warn' | 'pause' | 'halt';
+
+export type TokenProfile = 'budget' | 'balanced' | 'quality';
+
+export type InlineLevel = 'full' | 'standard' | 'minimal';
+
+export type ComplexityTier = 'light' | 'standard' | 'heavy';
+
+export interface ClassificationResult {
+  tier: ComplexityTier;
+  reason: string;
+  downgraded: boolean;
+}
+
+export interface TaskMetadata {
+  fileCount?: number;
+  dependencyCount?: number;
+  isNewFile?: boolean;
+  tags?: string[];
+  estimatedLines?: number;
+  codeBlockCount?: number;
+  complexityKeywords?: string[];
+}
+
+export interface PhaseSkipPreferences {
+  skip_research?: boolean;
+  skip_reassess?: boolean;
+  skip_slice_research?: boolean;
+}
+
+export interface NotificationPreferences {
+  enabled?: boolean;           // default true
+  on_complete?: boolean;       // notify on each unit completion
+  on_error?: boolean;          // notify on errors
+  on_budget?: boolean;         // notify on budget thresholds
+  on_milestone?: boolean;      // notify when milestone finishes
+  on_attention?: boolean;      // notify when manual attention needed
+}
+
 // ─── Pre-Dispatch Hook Types ──────────────────────────────────────────────
 
 export interface PreDispatchHookConfig {

@@ -21,6 +21,25 @@ One command. Walk away. Come back to a built project with clean git history.
 
 ---
 
+## Documentation
+
+Full documentation is available in the [`docs/`](./docs/) directory:
+
+- **[Getting Started](./docs/getting-started.md)** — install, first run, basic usage
+- **[Auto Mode](./docs/auto-mode.md)** — autonomous execution deep-dive
+- **[Configuration](./docs/configuration.md)** — all preferences, models, git, and hooks
+- **[Token Optimization](./docs/token-optimization.md)** — profiles, context compression, complexity routing (v2.17)
+- **[Cost Management](./docs/cost-management.md)** — budgets, tracking, projections
+- **[Git Strategy](./docs/git-strategy.md)** — worktree isolation, branching, merge behavior
+- **[Working in Teams](./docs/working-in-teams.md)** — unique IDs, shared artifacts
+- **[Skills](./docs/skills.md)** — bundled skills, discovery, custom authoring
+- **[Commands Reference](./docs/commands.md)** — all commands and keyboard shortcuts
+- **[Architecture](./docs/architecture.md)** — system design and dispatch pipeline
+- **[Troubleshooting](./docs/troubleshooting.md)** — common issues, doctor, recovery
+- **[Migration from v1](./docs/migration.md)** — `.planning` → `.gsd` migration
+
+---
+
 ## What Changed From v1
 
 The original GSD was a collection of markdown prompts installed into `~/.claude/commands/`. It relied entirely on the LLM reading those prompts and doing the right thing. That worked surprisingly well — but it had hard limits:
@@ -38,7 +57,7 @@ GSD v2 solves all of these because it's not a prompt framework anymore — it's 
 | Context management   | Hope the LLM doesn't fill up | Fresh session per task, programmatic                    |
 | Auto mode            | LLM self-loop                | State machine reading `.gsd/` files                     |
 | Crash recovery       | None                         | Lock files + session forensics                          |
-| Git strategy         | LLM writes git commands      | Programmatic branch-per-slice, squash merge             |
+| Git strategy         | LLM writes git commands      | Worktree isolation, sequential commits, squash merge    |
 | Cost tracking        | None                         | Per-unit token/cost ledger with dashboard               |
 | Stuck detection      | None                         | Retry once, then stop with diagnostics                  |
 | Timeout supervision  | None                         | Soft/idle/hard timeouts with recovery steering          |
@@ -111,7 +130,7 @@ Auto mode is a state machine driven by files on disk. It reads `.gsd/STATE.md`, 
 
 2. **Context pre-loading** — The dispatch prompt includes inlined task plans, slice plans, prior task summaries, dependency summaries, roadmap excerpts, and decisions register. The LLM starts with everything it needs instead of spending tool calls reading files.
 
-3. **Git branch-per-slice** — Each slice gets its own branch (`gsd/M001/S01`). Tasks commit atomically on the branch. When the slice completes, it's squash-merged to main (or whichever branch you started from) as one clean commit.
+3. **Git worktree isolation** — Each milestone runs in its own git worktree with a `milestone/<MID>` branch. All slice work commits sequentially — no branch switching, no merge conflicts. When the milestone completes, it's squash-merged to main as one clean commit.
 
 4. **Crash recovery** — A lock file tracks the current unit. If the session dies, the next `/gsd auto` reads the surviving session file, synthesizes a recovery briefing from every tool call that made it to disk, and resumes with full context.
 
@@ -213,6 +232,7 @@ On first run, GSD launches a branded setup wizard that walks you through LLM pro
 | `/gsd next`             | Explicit step mode (same as bare `/gsd`)                        |
 | `/gsd auto`             | Autonomous mode — researches, plans, executes, commits, repeats |
 | `/gsd stop`             | Stop auto mode gracefully                                       |
+| `/gsd steer`            | Hard-steer plan documents during execution                      |
 | `/gsd discuss`          | Discuss architecture and decisions (works alongside auto mode)  |
 | `/gsd status`           | Progress dashboard                                              |
 | `/gsd queue`            | Queue future milestones (safe during auto mode)                 |
@@ -268,7 +288,7 @@ gsd/M001/S01 (deleted after merge):
   feat(S01/T01): core types and interfaces
 ```
 
-One commit per slice on main (or whichever branch you started from). Squash commits are the permanent record — branches are deleted after merge. Git bisect works. Individual slices are revertable.
+One squash commit per milestone on main (or whichever branch you started from). The worktree is torn down after merge. Git bisect works. Individual milestones are revertable.
 
 ### Verification
 
@@ -332,6 +352,26 @@ unique_milestone_ids: true
 | `always_use_skills`    | Skills to always load when relevant                                                                   |
 | `skill_rules`          | Situational rules for skill routing                                                                   |
 | `unique_milestone_ids` | Uses unique milestone names to avoid clashes when working in teams of people                          |
+
+### Token Optimization (v2.17)
+
+GSD 2.17 introduced a coordinated token optimization system that reduces usage by 40-60% on cost-sensitive workloads. Set a single preference to coordinate model selection, phase skipping, and context compression:
+
+```yaml
+token_profile: budget      # or balanced (default), quality
+```
+
+| Profile | Savings | What It Does |
+|---------|---------|-------------|
+| `budget` | 40-60% | Cheap models, skip research/reassess, minimal context inlining |
+| `balanced` | 10-20% | Default models, skip slice research, standard context |
+| `quality` | 0% | All phases, all context, full model power |
+
+**Complexity-based routing** automatically classifies tasks as simple/standard/complex and routes to appropriate models. Simple docs tasks get Haiku; complex architectural work gets Opus. The classification is heuristic (sub-millisecond, no LLM calls) and learns from outcomes via a persistent routing history.
+
+**Budget pressure** graduates model downgrading as you approach your budget ceiling — 50%, 75%, and 90% thresholds progressively shift work to cheaper tiers.
+
+See the full [Token Optimization Guide](./docs/token-optimization.md) for details.
 
 ### Bundled Tools
 
