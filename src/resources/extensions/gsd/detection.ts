@@ -435,7 +435,10 @@ export function detectProjectSignals(basePath: string): ProjectSignals {
   }
 
   const springBootFiles = scannedFiles.filter((file) =>
-    file.endsWith("pom.xml") || file.endsWith("build.gradle") || file.endsWith("build.gradle.kts"),
+    file.endsWith("pom.xml") ||
+    file.endsWith("build.gradle") ||
+    file.endsWith("build.gradle.kts") ||
+    file.endsWith("libs.versions.toml"),
   );
   if (containsDependencyMarker(basePath, springBootFiles, "spring-boot")) {
     pushUnique(detectedFiles, "dep:spring-boot");
@@ -773,7 +776,7 @@ function containsDependencyMarker(basePath: string, relativePaths: string[], mar
       if (marker === "fastapi" && /\bfastapi(?:[-_][a-z0-9]+)?\b/.test(content)) {
         return true;
       }
-      if (marker === "spring-boot" && /(org\.springframework\.boot|spring-boot(?:-starter)?)/.test(content)) {
+      if (marker === "spring-boot" && /(org\.springframework\.boot|spring[-.]boot(?:[-.]starter)?)/.test(content)) {
         return true;
       }
     } catch {
@@ -786,10 +789,10 @@ function containsDependencyMarker(basePath: string, relativePaths: string[], mar
 
 function stripDependencyComments(relativePath: string, content: string): string {
   if (relativePath.endsWith("requirements.txt")) {
-    return content.replace(/^\s*#.*$/gm, "");
+    return content.replace(/(^|\s)#.*$/gm, "");
   }
   if (relativePath.endsWith("pyproject.toml")) {
-    return content.replace(/^\s*#.*$/gm, "");
+    return content.replace(/(^|\s)#.*$/gm, "");
   }
   if (relativePath.endsWith("pom.xml")) {
     return content.replace(/<!--[\s\S]*?-->/g, "");
@@ -797,7 +800,7 @@ function stripDependencyComments(relativePath: string, content: string): string 
   if (relativePath.endsWith("build.gradle") || relativePath.endsWith("build.gradle.kts")) {
     return content
       .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/^\s*\/\/.*$/gm, "");
+      .replace(/\/\/.*$/gm, "");
   }
   return content;
 }

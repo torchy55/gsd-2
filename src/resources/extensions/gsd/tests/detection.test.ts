@@ -793,6 +793,17 @@ test("detectProjectSignals: FastAPI comments do not trigger dep:fastapi", () => 
   }
 });
 
+test("detectProjectSignals: FastAPI inline comments do not trigger dep:fastapi", () => {
+  const dir = makeTempDir("signals-fastapi-inline-comment");
+  try {
+    writeFileSync(join(dir, "requirements.txt"), "flask==3.0  # maybe fastapi later\n", "utf-8");
+    const signals = detectProjectSignals(dir);
+    assert.ok(!signals.detectedFiles.includes("dep:fastapi"), "inline comments should not trigger FastAPI detection");
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("detectProjectSignals: Django project does NOT get dep:fastapi marker", () => {
   const dir = makeTempDir("signals-django-no-fastapi");
   try {
@@ -866,6 +877,36 @@ test("detectProjectSignals: Android Gradle project does not emit dep:spring-boot
     writeFileSync(join(dir, "app", "build.gradle"), "plugins { id 'com.android.application' }", "utf-8");
     const signals = detectProjectSignals(dir);
     assert.ok(!signals.detectedFiles.includes("dep:spring-boot"), "Android Gradle files should not trigger Spring Boot detection");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("detectProjectSignals: Android inline comments do not emit dep:spring-boot", () => {
+  const dir = makeTempDir("signals-android-inline-comment");
+  try {
+    writeFileSync(join(dir, "build.gradle"), "plugins { id 'com.android.application' } // spring-boot maybe later", "utf-8");
+    mkdirSync(join(dir, "app"), { recursive: true });
+    writeFileSync(join(dir, "app", "build.gradle"), "plugins { id 'com.android.application' }", "utf-8");
+    const signals = detectProjectSignals(dir);
+    assert.ok(!signals.detectedFiles.includes("dep:spring-boot"), "inline comments should not trigger Spring Boot detection");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("detectProjectSignals: Spring Boot version-catalog alias emits dep:spring-boot", () => {
+  const dir = makeTempDir("signals-spring-version-catalog");
+  try {
+    mkdirSync(join(dir, "gradle"), { recursive: true });
+    writeFileSync(join(dir, "build.gradle.kts"), "plugins { alias(libs.plugins.spring.boot) }", "utf-8");
+    writeFileSync(
+      join(dir, "gradle", "libs.versions.toml"),
+      "[plugins]\nspring-boot = { id = 'org.springframework.boot', version = '3.2.0' }\n",
+      "utf-8",
+    );
+    const signals = detectProjectSignals(dir);
+    assert.ok(signals.detectedFiles.includes("dep:spring-boot"), "should detect Spring Boot via version-catalog alias");
   } finally {
     cleanup(dir);
   }
