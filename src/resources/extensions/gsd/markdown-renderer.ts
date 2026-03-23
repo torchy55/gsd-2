@@ -171,7 +171,7 @@ function renderRoadmapMarkdown(milestone: MilestoneRow, slices: SliceRow[]): str
   lines.push("");
   for (const slice of slices) {
     const done = slice.status === "complete" ? "x" : " ";
-    const depends = JSON.stringify(slice.depends ?? []);
+    const depends = `[${(slice.depends ?? []).join(",")}]`;
     lines.push(`- [${done}] **${slice.id}: ${slice.title}** \`risk:${slice.risk}\` \`depends:${depends}\``);
     lines.push(`  > After this: ${slice.demo}`);
     lines.push("");

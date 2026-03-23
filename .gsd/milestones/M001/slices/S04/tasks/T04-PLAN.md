@@ -46,3 +46,9 @@ Create `planning-crossval.test.ts` following the `derive-state-crossval.test.ts`
 ## Expected Output
 
 - `src/resources/extensions/gsd/tests/planning-crossval.test.ts` — new cross-validation test file with 3 scenarios
+
+## Observability Impact
+
+- **Signals changed:** No runtime signals changed — this is a test-only task.
+- **Inspection:** Test output reports pass/fail per field-parity assertion across 3 scenarios (ROADMAP round-trip, PLAN round-trip, sequence ordering). Future agents can run the test to verify DB↔rendered↔parsed parity holds after any renderer or parser change.
+- **Failure visibility:** Test failures print `FAIL: <scenario>: <field>` with expected vs actual values, enabling precise field-level diagnosis of parity regressions.
