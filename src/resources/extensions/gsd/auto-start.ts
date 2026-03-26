@@ -66,6 +66,7 @@ import {
   isDebugEnabled,
   getDebugLogPath,
 } from "./debug-logger.js";
+import { parseUnitId } from "./unit-id.js";
 import type { AutoSession } from "./auto/session.js";
 import {
   existsSync,
@@ -200,7 +201,7 @@ export async function bootstrapAutoSession(
         );
         return releaseLockAndReturn();
       }
-      const recoveredMid = crashLock.unitId.split("/")[0];
+      const recoveredMid = parseUnitId(crashLock.unitId).milestone;
       const milestoneAlreadyComplete = recoveredMid
         ? !!resolveMilestoneFile(base, recoveredMid, "SUMMARY")
         : false;
